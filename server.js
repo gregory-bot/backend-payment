@@ -7,7 +7,7 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000; // Use 10000 for Render
 
 // Simple CORS
 app.use(cors());
@@ -23,7 +23,13 @@ const MPESA_CONFIG = {
   environment: process.env.MPESA_SHORT_CODE === '174379' ? 'sandbox' : 'production'
 };
 
-console.log('🔧 M-Pesa Configuration:');
+console.log('\n🔍 Environment Variables Check:');
+console.log('MPESA_CALLBACK_URL:', process.env.MPESA_CALLBACK_URL || 'NOT SET');
+console.log('PORT:', process.env.PORT);
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('MPESA_SHORT_CODE:', process.env.MPESA_SHORT_CODE ? '***SET***' : 'NOT SET');
+
+console.log('\n🔧 M-Pesa Configuration:');
 console.log('- Environment:', MPESA_CONFIG.environment);
 console.log('- Short Code:', MPESA_CONFIG.shortCode);
 console.log('- Consumer Key:', MPESA_CONFIG.consumerKey ? '***SET***' : '❌ MISSING');
@@ -170,6 +176,20 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
       timestamp
     ).toString('base64');
     
+    // DEBUG: Show what CallBackURL is being used
+    const callbackUrl = process.env.MPESA_CALLBACK_URL || `https://backend-payment-cv4c.onrender.com/api/mpesa/callback`;
+    console.log('\n🔗 CallBackURL Configuration:');
+    console.log('- From env MPESA_CALLBACK_URL:', process.env.MPESA_CALLBACK_URL || 'NOT SET');
+    console.log('- Using CallBackURL:', callbackUrl);
+    console.log('- Contains localhost?:', callbackUrl.includes('localhost'));
+    console.log('- Is HTTPS?:', callbackUrl.startsWith('https://'));
+    
+    if (callbackUrl.includes('localhost')) {
+      console.error('❌ CRITICAL ERROR: CallBackURL contains localhost!');
+      console.error('   M-Pesa production requires a public HTTPS URL');
+      console.error('   Update MPESA_CALLBACK_URL in Render environment variables');
+    }
+    
     // Prepare request
     const requestData = {
       BusinessShortCode: MPESA_CONFIG.shortCode,
@@ -180,16 +200,17 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
       PartyA: phone,
       PartyB: MPESA_CONFIG.shortCode,
       PhoneNumber: phone,
-      CallBackURL: process.env.MPESA_CALLBACK_URL || `http://localhost:${PORT}/api/mpesa/callback`,
+      CallBackURL: callbackUrl,
       AccountReference: accountReference || 'GadgetsByCrestrock',
       TransactionDesc: transactionDesc || 'Purchase from Gadgets by Crestrock'
     };
     
-    console.log('📤 Sending to M-Pesa API...');
+    console.log('\n📤 Sending to M-Pesa API...');
     console.log('URL:', `${MPESA_BASE_URL}/mpesa/stkpush/v1/processrequest`);
     console.log('BusinessShortCode:', MPESA_CONFIG.shortCode);
     console.log('Amount:', Math.round(amount));
     console.log('Phone:', phone);
+    console.log('CallBackURL:', callbackUrl);
     
     // Send to M-Pesa
     const response = await axios.post(
@@ -204,7 +225,7 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
       }
     );
     
-    console.log('✅ M-Pesa response:', response.data);
+    console.log('✅ M-Pesa STK Push Success:', response.data);
     
     res.json({
       success: true,
@@ -226,6 +247,14 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
       
       if (error.response.data && error.response.data.errorMessage) {
         errorMessage = error.response.data.errorMessage;
+        
+        // Special handling for CallBackURL errors
+        if (error.response.data.errorMessage.includes('CallBackURL')) {
+          errorMessage += '\n\n⚠️  SOLUTION:';
+          errorMessage += '\n1. Set MPESA_CALLBACK_URL in Render environment variables';
+          errorMessage += '\n2. Use: https://backend-payment-cv4c.onrender.com/api/mpesa/callback';
+          errorMessage += '\n3. Whitelist this URL in Safaricom Daraja portal';
+        }
       } else if (error.response.data && error.response.data.errorCode) {
         errorMessage = `M-Pesa error: ${error.response.data.errorCode}`;
       }
@@ -240,7 +269,7 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
       error: error.response?.data || error.message,
       environment: MPESA_CONFIG.environment,
       tip: MPESA_CONFIG.environment === 'production' 
-        ? 'Using production credentials. Test with a real M-Pesa account.'
+        ? 'Using production credentials. Test with a real M-Pesa account.' 
         : 'For sandbox testing: phone=254708374149, PIN=4103'
     });
   }
@@ -249,7 +278,10 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
 // M-Pesa Callback
 app.post('/api/mpesa/callback', (req, res) => {
   console.log('\n📞 M-Pesa Callback Received:');
-  console.log(JSON.stringify(req.body, null, 2));
+  console.log('Callback URL:', req.originalUrl);
+  console.log('Method:', req.method);
+  console.log('Headers:', req.headers);
+  console.log('Body:', JSON.stringify(req.body, null, 2));
   
   // Process callback data here
   // In production: update database, send notifications, etc.
@@ -258,17 +290,25 @@ app.post('/api/mpesa/callback', (req, res) => {
   res.json({ ResultCode: 0, ResultDesc: 'Success' });
 });
 
-// Health check endpoint
+// Health check endpoint with more details
 app.get('/api/health', async (req, res) => {
   const health = {
     status: 'OK',
     timestamp: new Date().toISOString(),
     service: 'Gadgets by Crestrock API',
+    url: req.protocol + '://' + req.get('host') + req.originalUrl,
+    environment: {
+      NODE_ENV: process.env.NODE_ENV,
+      PORT: process.env.PORT,
+      MPESA_CALLBACK_URL: process.env.MPESA_CALLBACK_URL ? 'SET' : 'NOT SET'
+    },
     mpesa: {
       environment: MPESA_CONFIG.environment,
       configured: !!(MPESA_CONFIG.consumerKey && MPESA_CONFIG.consumerSecret),
       shortCode: MPESA_CONFIG.shortCode,
-      baseUrl: MPESA_BASE_URL
+      baseUrl: MPESA_BASE_URL,
+      callbackEndpoint: '/api/mpesa/callback',
+      fullCallbackUrl: process.env.MPESA_CALLBACK_URL || `https://backend-payment-cv4c.onrender.com/api/mpesa/callback`
     }
   };
 
@@ -289,15 +329,34 @@ app.get('/api/health', async (req, res) => {
   res.json(health);
 });
 
-// Test endpoint
+// Test endpoint with callback URL info
 app.get('/api/test', (req, res) => {
+  const callbackUrl = process.env.MPESA_CALLBACK_URL || 'https://backend-payment-cv4c.onrender.com/api/mpesa/callback';
+  
   res.json({ 
     success: true, 
     message: 'API is working!',
     environment: MPESA_CONFIG.environment,
+    callbackUrl: callbackUrl,
     note: MPESA_CONFIG.environment === 'production' 
-      ? 'Using production M-Pesa. Test with real accounts.' 
-      : 'Using sandbox. Test phone: 254708374149, PIN: 4103'
+      ? `Using production M-Pesa. Callback URL: ${callbackUrl}` 
+      : 'Using sandbox. Test phone: 254708374149, PIN: 4103',
+    steps: MPESA_CONFIG.environment === 'production' ? [
+      '1. Ensure MPESA_CALLBACK_URL is set in Render',
+      '2. Whitelist the URL in Safaricom Daraja portal',
+      '3. Test with small amount first'
+    ] : []
+  });
+});
+
+// Test callback endpoint
+app.get('/api/mpesa/test-callback', (req, res) => {
+  res.json({ 
+    success: true, 
+    message: 'Callback endpoint is accessible',
+    url: req.protocol + '://' + req.get('host') + '/api/mpesa/callback',
+    method: 'POST',
+    requiredResponse: '{ "ResultCode": 0, "ResultDesc": "Success" }'
   });
 });
 
@@ -352,14 +411,22 @@ app.listen(PORT, () => {
   console.log(`🚀 Backend server running on port ${PORT}`);
   console.log(`📱 M-Pesa Environment: ${MPESA_CONFIG.environment}`);
   console.log(`🔗 Test endpoints:`);
-  console.log(`   - http://localhost:${PORT}/api/health`);
-  console.log(`   - http://localhost:${PORT}/api/test`);
+  console.log(`   - https://backend-payment-cv4c.onrender.com/api/health`);
+  console.log(`   - https://backend-payment-cv4c.onrender.com/api/test`);
+  console.log(`   - https://backend-payment-cv4c.onrender.com/api/mpesa/test-callback`);
   console.log(`\n💡 Important:`);
   
   if (MPESA_CONFIG.environment === 'production') {
     console.log(`   ⚠️  USING PRODUCTION CREDENTIALS`);
     console.log(`   ⚠️  Real money will be deducted`);
     console.log(`   ⚠️  Test with small amounts first`);
+    console.log(`\n🔗 Callback URL required:`);
+    console.log(`   ${process.env.MPESA_CALLBACK_URL || 'https://backend-payment-cv4c.onrender.com/api/mpesa/callback'}`);
+    console.log(`\n📋 Steps to fix CallBackURL error:`);
+    console.log(`   1. Go to Render dashboard → Environment`);
+    console.log(`   2. Set MPESA_CALLBACK_URL to:`);
+    console.log(`      https://backend-payment-cv4c.onrender.com/api/mpesa/callback`);
+    console.log(`   3. Whitelist in Safaricom Daraja portal`);
   } else {
     console.log(`   🧪 SANDBOX MODE (testing only)`);
     console.log(`   📞 Test phone: 254708374149`);
