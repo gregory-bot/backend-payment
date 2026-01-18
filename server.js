@@ -10,13 +10,6 @@ const admin = require('firebase-admin');
 
 dotenv.config();
 
-// Debug private key format
-console.log('🔍 Debugging Firebase Private Key:');
-console.log('First 100 chars:', process.env.FIREBASE_PRIVATE_KEY?.substring(0, 100));
-console.log('Contains \\\\n (escaped):', process.env.FIREBASE_PRIVATE_KEY?.includes('\\n'));
-console.log('Contains actual newline:', process.env.FIREBASE_PRIVATE_KEY?.includes('\n'));
-console.log('Key length:', process.env.FIREBASE_PRIVATE_KEY?.length);
-
 /* ======================================================
    🔥 Firebase Admin Initialization (Render-Compatible)
    ====================================================== */
@@ -31,79 +24,30 @@ if (
 
 // Robust private key parser
 function parsePrivateKey(key) {
-  if (!key) {
-    console.error('❌ Private key is empty or undefined');
-    return '';
-  }
+  if (!key) return '';
   
-  console.log('🔧 Raw key starts with:', key.substring(0, 30));
-  
-  // First, try to replace escaped newlines
   let parsed = key.replace(/\\n/g, '\n');
   
-  // Check if we have proper PEM format
-  const hasBeginMarker = parsed.includes('-----BEGIN PRIVATE KEY-----');
-  const hasEndMarker = parsed.includes('-----END PRIVATE KEY-----');
-  
-  console.log('Has BEGIN marker:', hasBeginMarker);
-  console.log('Has END marker:', hasEndMarker);
-  console.log('Has newlines after parsing:', parsed.includes('\n'));
-  
-  if (!parsed.includes('\n') && hasBeginMarker && hasEndMarker) {
-    console.log('⚠️ No newlines detected, trying to reconstruct PEM format...');
-    // Try to reconstruct PEM format
-    parsed = parsed.replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n');
-    parsed = parsed.replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----');
-    
-    // Try to add line breaks to the base64 content (64 chars per line)
-    const beginIndex = parsed.indexOf('-----BEGIN PRIVATE KEY-----\n') + '-----BEGIN PRIVATE KEY-----\n'.length;
-    const endIndex = parsed.indexOf('\n-----END PRIVATE KEY-----');
-    
-    if (beginIndex < endIndex) {
-      const base64Content = parsed.substring(beginIndex, endIndex).replace(/\s+/g, '');
-      const formattedBase64 = base64Content.replace(/(.{64})/g, '$1\n').trim();
-      parsed = `-----BEGIN PRIVATE KEY-----\n${formattedBase64}\n-----END PRIVATE KEY-----\n`;
-    }
+  if (!parsed.includes('\n') && parsed.includes('-----BEGIN PRIVATE KEY-----')) {
+    parsed = parsed.replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n')
+                   .replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----');
   }
-  
-  // Ensure it ends with a newline
-  if (!parsed.endsWith('\n')) {
-    parsed += '\n';
-  }
-  
-  console.log('🔧 Parsed key first 50 chars:', parsed.substring(0, 50));
-  console.log('🔧 Parsed key last 50 chars:', parsed.substring(parsed.length - 50));
   
   return parsed;
 }
 
 try {
-  const privateKey = parsePrivateKey(process.env.FIREBASE_PRIVATE_KEY);
-  
-  // Additional validation
-  if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
-    console.error('❌ Parsed key missing BEGIN marker');
-    console.error('Parsed key:', privateKey);
-  }
-  
-  if (!privateKey.includes('-----END PRIVATE KEY-----')) {
-    console.error('❌ Parsed key missing END marker');
-    console.error('Parsed key:', privateKey);
-  }
-  
   admin.initializeApp({
     credential: admin.credential.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: privateKey,
+      privateKey: parsePrivateKey(process.env.FIREBASE_PRIVATE_KEY),
     }),
     databaseURL: process.env.FIREBASE_DATABASE_URL,
   });
-  
   console.log('✅ Firebase Admin initialized successfully!');
 } catch (error) {
   console.error('❌ Firebase initialization failed:', error.message);
-  console.error('Full error:', error);
   throw error;
 }
 
@@ -195,6 +139,7 @@ async function saveOrderToFirebase(orderData) {
     id: ref.key,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    status: 'pending', // Initial status
   };
   await ref.set(order);
   return order;
@@ -206,26 +151,130 @@ async function updateOrderStatus(orderId, status, mpesaData = null) {
   await db.ref(`orders/${orderId}`).update(updates);
 }
 
-async function createNotification(message, type = 'info', orderId = null) {
-  const ref = db.ref('notifications').push();
-  await ref.set({
-    id: ref.key,
-    message,
-    type,
-    orderId,
-    read: false,
-    time: new Date().toISOString(),
-  });
+async function getOrderById(orderId) {
+  const snapshot = await db.ref(`orders/${orderId}`).once('value');
+  return snapshot.val();
 }
+
+/* ======================================================
+   📍 API Endpoints
+   ====================================================== */
+
+// 1. Health Check
+app.get('/api/health', (_, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    service: 'Gadgets by Crestrock API',
+    endpoints: [
+      '/api/health',
+      '/api/orders (POST)',
+      '/api/orders/:id (GET)',
+      '/api/mpesa/stk-push (POST)',
+      '/api/mpesa/callback (POST)'
+    ]
+  });
+});
+
+// 2. Create Order
+app.post('/api/orders', async (req, res) => {
+  try {
+    const { items, total, customerInfo, paymentMethod } = req.body;
+    
+    if (!items || !total || !customerInfo || !paymentMethod) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields: items, total, customerInfo, paymentMethod' 
+      });
+    }
+
+    if (!customerInfo.name || !customerInfo.phone || !customerInfo.deliveryAddress) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing customer information: name, phone, and deliveryAddress are required' 
+      });
+    }
+
+    console.log('📦 Creating order for:', customerInfo.name);
+    
+    const orderData = {
+      items,
+      total: parseFloat(total),
+      customerInfo: {
+        ...customerInfo,
+        phone: formatPhone(customerInfo.phone)
+      },
+      paymentMethod,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const order = await saveOrderToFirebase(orderData);
+    
+    console.log('✅ Order created with ID:', order.id);
+    
+    res.status(201).json({
+      success: true,
+      order,
+      message: 'Order created successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error creating order:', error.message);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to create order'
+    });
+  }
+});
+
+// 3. Get Order by ID
+app.get('/api/orders/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const order = await getOrderById(id);
+    
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      order
+    });
+  } catch (error) {
+    console.error('❌ Error fetching order:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order'
+    });
+  }
+});
 
 /* ======================================================
    📱 STK PUSH Endpoint
    ====================================================== */
 app.post('/api/mpesa/stk-push', async (req, res) => {
   try {
-    const { phoneNumber, amount, orderId } = req.body;
+    const { phoneNumber, amount, orderId, accountReference, transactionDesc } = req.body;
+    
     if (!phoneNumber || !amount || !orderId) {
-      return res.status(400).json({ success: false, message: 'Missing fields' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields: phoneNumber, amount, orderId' 
+      });
+    }
+
+    // Verify order exists
+    const order = await getOrderById(orderId);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
     }
 
     const token = await getMpesaAccessToken();
@@ -249,22 +298,40 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
         CallBackURL:
           process.env.MPESA_CALLBACK_URL ||
           `https://backend-payment-cv4c.onrender.com/api/mpesa/callback`,
-        AccountReference: 'GadgetsByCrestrock',
-        TransactionDesc: 'Gadgets Purchase',
+        AccountReference: accountReference || `ORDER-${orderId.slice(-8)}`,
+        TransactionDesc: transactionDesc || 'Gadgets Purchase',
       },
-      { headers: { Authorization: `Bearer ${token}` } }
+      { 
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 30000
+      }
     );
 
-    await db.ref(`orders/${orderId}`).update({
+    // Update order with checkout request ID
+    await updateOrderStatus(orderId, 'payment_pending', {
       checkoutRequestId: response.data.CheckoutRequestID,
-      status: 'payment_pending',
+      merchantRequestId: response.data.MerchantRequestID
     });
 
-    await createNotification(`Payment initiated for order ${orderId}`, 'info', orderId);
-
-    res.json({ success: true, data: response.data });
+    console.log('✅ STK Push initiated for order:', orderId);
+    
+    res.json({
+      success: true,
+      data: response.data,
+      message: 'STK Push initiated successfully'
+    });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    console.error('❌ STK Push error:', error.message);
+    
+    if (error.response) {
+      console.error('M-Pesa API Response:', error.response.data);
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to initiate STK Push',
+      error: error.response?.data || error.message
+    });
   }
 });
 
@@ -273,43 +340,81 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
    ====================================================== */
 app.post('/api/mpesa/callback', async (req, res) => {
   try {
+    console.log('📞 Received M-Pesa callback:', JSON.stringify(req.body, null, 2));
+    
     const stk = req.body?.Body?.stkCallback;
-    if (!stk) return res.json({ ResultCode: 1 });
+    if (!stk) {
+      console.log('No STK callback data found');
+      return res.json({ ResultCode: 1, ResultDesc: 'No STK callback data' });
+    }
 
-    const snap = await db
-      .ref('orders')
-      .orderByChild('checkoutRequestId')
-      .equalTo(stk.CheckoutRequestID)
+    const { CheckoutRequestID, ResultCode, ResultDesc, CallbackMetadata } = stk;
+    
+    console.log(`Processing callback for CheckoutRequestID: ${CheckoutRequestID}`);
+    console.log(`ResultCode: ${ResultCode}, ResultDesc: ${ResultDesc}`);
+
+    // Find order by checkoutRequestId
+    const ordersRef = db.ref('orders');
+    const snapshot = await ordersRef
+      .orderByChild('mpesaData/checkoutRequestId')
+      .equalTo(CheckoutRequestID)
       .once('value');
 
-    if (snap.exists()) {
-      const [orderId] = Object.keys(snap.val());
+    if (!snap.exists() || snap.val() === null) {
+      console.log('❌ No order found for CheckoutRequestID:', CheckoutRequestID);
+      return res.json({ ResultCode: 1, ResultDesc: 'Order not found' });
+    }
 
-      if (stk.ResultCode === 0) {
-        const meta = stk.CallbackMetadata.Item;
-        await updateOrderStatus(orderId, 'paid', {
-          receipt: meta.find(i => i.Name === 'MpesaReceiptNumber')?.Value,
-          amount: meta.find(i => i.Name === 'Amount')?.Value,
-        });
-      } else {
-        await updateOrderStatus(orderId, 'payment_failed', { reason: stk.ResultDesc });
-      }
+    const orders = snap.val();
+    const orderId = Object.keys(orders)[0];
+    const order = orders[orderId];
+
+    if (ResultCode === 0) {
+      // Payment successful
+      const meta = CallbackMetadata.Item;
+      const receiptNumber = meta.find(i => i.Name === 'MpesaReceiptNumber')?.Value;
+      const amount = meta.find(i => i.Name === 'Amount')?.Value;
+      const phoneNumber = meta.find(i => i.Name === 'PhoneNumber')?.Value;
+      
+      await updateOrderStatus(orderId, 'paid', {
+        receiptNumber,
+        amount,
+        phoneNumber,
+        completedAt: new Date().toISOString()
+      });
+      
+      console.log(`✅ Payment successful for order ${orderId}. Receipt: ${receiptNumber}`);
+    } else {
+      // Payment failed
+      await updateOrderStatus(orderId, 'payment_failed', { 
+        reason: ResultDesc,
+        failedAt: new Date().toISOString()
+      });
+      
+      console.log(`❌ Payment failed for order ${orderId}: ${ResultDesc}`);
     }
 
     res.json({ ResultCode: 0, ResultDesc: 'Success' });
-  } catch {
-    res.json({ ResultCode: 1 });
+  } catch (error) {
+    console.error('❌ Callback processing error:', error.message);
+    res.json({ ResultCode: 1, ResultDesc: 'Callback processing failed' });
   }
 });
 
 /* ======================================================
-   🧪 Health Check
+   ⚠️ 404 Handler for undefined routes
    ====================================================== */
-app.get('/api/health', (_, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    service: 'Gadgets by Crestrock API',
+app.use('/api/*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route not found: ${req.originalUrl}`,
+    availableRoutes: [
+      'GET /api/health',
+      'POST /api/orders',
+      'GET /api/orders/:id',
+      'POST /api/mpesa/stk-push',
+      'POST /api/mpesa/callback'
+    ]
   });
 });
 
@@ -318,4 +423,10 @@ app.get('/api/health', (_, res) => {
    ====================================================== */
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🌐 Health check: https://backend-payment-cv4c.onrender.com/api/health`);
+  console.log(`📝 Available endpoints:`);
+  console.log(`   POST /api/orders - Create new order`);
+  console.log(`   GET  /api/orders/:id - Get order by ID`);
+  console.log(`   POST /api/mpesa/stk-push - Initiate M-Pesa payment`);
+  console.log(`   POST /api/mpesa/callback - M-Pesa callback (auto)`);
 });
