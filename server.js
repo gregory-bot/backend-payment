@@ -10,6 +10,13 @@ const admin = require('firebase-admin');
 
 dotenv.config();
 
+// Debug private key format
+console.log('🔍 Debugging Firebase Private Key:');
+console.log('First 100 chars:', process.env.FIREBASE_PRIVATE_KEY?.substring(0, 100));
+console.log('Contains \\\\n (escaped):', process.env.FIREBASE_PRIVATE_KEY?.includes('\\n'));
+console.log('Contains actual newline:', process.env.FIREBASE_PRIVATE_KEY?.includes('\n'));
+console.log('Key length:', process.env.FIREBASE_PRIVATE_KEY?.length);
+
 /* ======================================================
    🔥 Firebase Admin Initialization (Render-Compatible)
    ====================================================== */
@@ -22,14 +29,83 @@ if (
   throw new Error('Missing Firebase environment variables!');
 }
 
-admin.initializeApp({
-  credential: admin.credential.cert({
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'), // ✅ Converts literal \n into actual line breaks
-  }),
-  databaseURL: process.env.FIREBASE_DATABASE_URL,
-});
+// Robust private key parser
+function parsePrivateKey(key) {
+  if (!key) {
+    console.error('❌ Private key is empty or undefined');
+    return '';
+  }
+  
+  console.log('🔧 Raw key starts with:', key.substring(0, 30));
+  
+  // First, try to replace escaped newlines
+  let parsed = key.replace(/\\n/g, '\n');
+  
+  // Check if we have proper PEM format
+  const hasBeginMarker = parsed.includes('-----BEGIN PRIVATE KEY-----');
+  const hasEndMarker = parsed.includes('-----END PRIVATE KEY-----');
+  
+  console.log('Has BEGIN marker:', hasBeginMarker);
+  console.log('Has END marker:', hasEndMarker);
+  console.log('Has newlines after parsing:', parsed.includes('\n'));
+  
+  if (!parsed.includes('\n') && hasBeginMarker && hasEndMarker) {
+    console.log('⚠️ No newlines detected, trying to reconstruct PEM format...');
+    // Try to reconstruct PEM format
+    parsed = parsed.replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n');
+    parsed = parsed.replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----');
+    
+    // Try to add line breaks to the base64 content (64 chars per line)
+    const beginIndex = parsed.indexOf('-----BEGIN PRIVATE KEY-----\n') + '-----BEGIN PRIVATE KEY-----\n'.length;
+    const endIndex = parsed.indexOf('\n-----END PRIVATE KEY-----');
+    
+    if (beginIndex < endIndex) {
+      const base64Content = parsed.substring(beginIndex, endIndex).replace(/\s+/g, '');
+      const formattedBase64 = base64Content.replace(/(.{64})/g, '$1\n').trim();
+      parsed = `-----BEGIN PRIVATE KEY-----\n${formattedBase64}\n-----END PRIVATE KEY-----\n`;
+    }
+  }
+  
+  // Ensure it ends with a newline
+  if (!parsed.endsWith('\n')) {
+    parsed += '\n';
+  }
+  
+  console.log('🔧 Parsed key first 50 chars:', parsed.substring(0, 50));
+  console.log('🔧 Parsed key last 50 chars:', parsed.substring(parsed.length - 50));
+  
+  return parsed;
+}
+
+try {
+  const privateKey = parsePrivateKey(process.env.FIREBASE_PRIVATE_KEY);
+  
+  // Additional validation
+  if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
+    console.error('❌ Parsed key missing BEGIN marker');
+    console.error('Parsed key:', privateKey);
+  }
+  
+  if (!privateKey.includes('-----END PRIVATE KEY-----')) {
+    console.error('❌ Parsed key missing END marker');
+    console.error('Parsed key:', privateKey);
+  }
+  
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: privateKey,
+    }),
+    databaseURL: process.env.FIREBASE_DATABASE_URL,
+  });
+  
+  console.log('✅ Firebase Admin initialized successfully!');
+} catch (error) {
+  console.error('❌ Firebase initialization failed:', error.message);
+  console.error('Full error:', error);
+  throw error;
+}
 
 const db = admin.database();
 
