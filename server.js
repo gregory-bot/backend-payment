@@ -59,8 +59,52 @@ const db = admin.database();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.use(cors());
+// Enhanced CORS configuration
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'https://gadgets-by-crestrock.vercel.app',
+  'https://*.vercel.app',
+  'https://*.onrender.com'
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.some(allowedOrigin => {
+      if (allowedOrigin.includes('*')) {
+        const pattern = allowedOrigin.replace('*', '.*');
+        return new RegExp(pattern).test(origin);
+      }
+      return allowedOrigin === origin;
+    })) {
+      callback(null, true);
+    } else {
+      console.log('🔒 Blocked by CORS:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  exposedHeaders: ['Content-Length', 'X-Request-ID']
+}));
+
+// Handle preflight requests
+app.options('*', cors());
+
 app.use(bodyParser.json());
+
+// Add request logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.url}`);
+  console.log('Origin:', req.headers.origin);
+  console.log('Headers:', req.headers);
+  next();
+});
 
 /* ======================================================
    💳 M-Pesa Configuration
@@ -139,7 +183,7 @@ async function saveOrderToFirebase(orderData) {
     id: ref.key,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    status: 'pending', // Initial status
+    status: 'pending',
   };
   await ref.set(order);
   return order;
@@ -161,7 +205,8 @@ async function getOrderById(orderId) {
    ====================================================== */
 
 // 1. Health Check
-app.get('/api/health', (_, res) => {
+app.get('/api/health', (req, res) => {
+  console.log('Health check from:', req.headers.origin);
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
@@ -172,13 +217,17 @@ app.get('/api/health', (_, res) => {
       '/api/orders/:id (GET)',
       '/api/mpesa/stk-push (POST)',
       '/api/mpesa/callback (POST)'
-    ]
+    ],
+    cors: 'enabled'
   });
 });
 
 // 2. Create Order
 app.post('/api/orders', async (req, res) => {
   try {
+    console.log('📦 Creating order request from:', req.headers.origin);
+    console.log('Request body:', req.body);
+    
     const { items, total, customerInfo, paymentMethod } = req.body;
     
     if (!items || !total || !customerInfo || !paymentMethod) {
@@ -259,6 +308,8 @@ app.get('/api/orders/:id', async (req, res) => {
    ====================================================== */
 app.post('/api/mpesa/stk-push', async (req, res) => {
   try {
+    console.log('📱 STK Push request from:', req.headers.origin);
+    
     const { phoneNumber, amount, orderId, accountReference, transactionDesc } = req.body;
     
     if (!phoneNumber || !amount || !orderId) {
@@ -284,6 +335,13 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
       MPESA_CONFIG.shortCode + MPESA_CONFIG.passKey + timestamp
     ).toString('base64');
 
+    console.log('Calling M-Pesa API with:', {
+      phone,
+      amount,
+      orderId,
+      timestamp
+    });
+
     const response = await axios.post(
       `${MPESA_BASE_URL}/mpesa/stkpush/v1/processrequest`,
       {
@@ -307,10 +365,13 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
       }
     );
 
+    console.log('M-Pesa API Response:', response.data);
+
     // Update order with checkout request ID
     await updateOrderStatus(orderId, 'payment_pending', {
       checkoutRequestId: response.data.CheckoutRequestID,
-      merchantRequestId: response.data.MerchantRequestID
+      merchantRequestId: response.data.MerchantRequestID,
+      stkPushSentAt: new Date().toISOString()
     });
 
     console.log('✅ STK Push initiated for order:', orderId);
@@ -360,12 +421,14 @@ app.post('/api/mpesa/callback', async (req, res) => {
       .equalTo(CheckoutRequestID)
       .once('value');
 
-    if (!snap.exists() || snap.val() === null) {
+    const snap = snapshot; // Fix: Changed from `snap` to `snapshot`
+
+    if (!snapshot.exists() || snapshot.val() === null) {
       console.log('❌ No order found for CheckoutRequestID:', CheckoutRequestID);
       return res.json({ ResultCode: 1, ResultDesc: 'Order not found' });
     }
 
-    const orders = snap.val();
+    const orders = snapshot.val();
     const orderId = Object.keys(orders)[0];
     const order = orders[orderId];
 
@@ -429,4 +492,5 @@ app.listen(PORT, () => {
   console.log(`   GET  /api/orders/:id - Get order by ID`);
   console.log(`   POST /api/mpesa/stk-push - Initiate M-Pesa payment`);
   console.log(`   POST /api/mpesa/callback - M-Pesa callback (auto)`);
+  console.log(`🔒 CORS enabled for:`, allowedOrigins);
 });
