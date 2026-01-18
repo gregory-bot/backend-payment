@@ -1,4 +1,6 @@
-// server.js
+/* ======================================================
+   🔧 Environment & Dependencies
+   ====================================================== */
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -9,13 +11,22 @@ const admin = require('firebase-admin');
 dotenv.config();
 
 /* ======================================================
-   🔥 Firebase Admin Initialization (FIXED FOR RENDER)
+   🔥 Firebase Admin Initialization (Render-Compatible)
    ====================================================== */
+if (
+  !process.env.FIREBASE_PROJECT_ID ||
+  !process.env.FIREBASE_CLIENT_EMAIL ||
+  !process.env.FIREBASE_PRIVATE_KEY ||
+  !process.env.FIREBASE_DATABASE_URL
+) {
+  throw new Error('Missing Firebase environment variables!');
+}
+
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'), // ✅ Converts literal \n into actual line breaks
   }),
   databaseURL: process.env.FIREBASE_DATABASE_URL,
 });
@@ -42,12 +53,12 @@ const MPESA_CONFIG = {
   environment: process.env.MPESA_SHORT_CODE === '174379' ? 'sandbox' : 'production',
 };
 
-console.log('\n🔧 M-Pesa Configuration Loaded');
-
 const MPESA_BASE_URL =
   MPESA_CONFIG.environment === 'production'
     ? 'https://api.safaricom.co.ke'
     : 'https://sandbox.safaricom.co.ke';
+
+console.log('🔧 M-Pesa Config Loaded:', MPESA_CONFIG.environment);
 
 /* ======================================================
    🔐 Get M-Pesa Access Token
@@ -90,15 +101,11 @@ function generateTimestamp() {
 
 function formatPhone(phone) {
   let cleaned = phone.replace(/\D/g, '');
-
   if (cleaned.startsWith('0')) cleaned = '254' + cleaned.slice(1);
   else if (cleaned.startsWith('+254')) cleaned = cleaned.slice(1);
   else if (!cleaned.startsWith('254')) cleaned = '254' + cleaned;
 
-  if (cleaned.length !== 12) {
-    throw new Error(`Invalid phone number: ${cleaned}`);
-  }
-
+  if (cleaned.length !== 12) throw new Error(`Invalid phone number: ${cleaned}`);
   return cleaned;
 }
 
@@ -118,10 +125,7 @@ async function saveOrderToFirebase(orderData) {
 }
 
 async function updateOrderStatus(orderId, status, mpesaData = null) {
-  const updates = {
-    status,
-    updatedAt: new Date().toISOString(),
-  };
+  const updates = { status, updatedAt: new Date().toISOString() };
   if (mpesaData) updates.mpesaData = mpesaData;
   await db.ref(`orders/${orderId}`).update(updates);
 }
@@ -139,12 +143,11 @@ async function createNotification(message, type = 'info', orderId = null) {
 }
 
 /* ======================================================
-   📱 STK PUSH
+   📱 STK PUSH Endpoint
    ====================================================== */
 app.post('/api/mpesa/stk-push', async (req, res) => {
   try {
     const { phoneNumber, amount, orderId } = req.body;
-
     if (!phoneNumber || !amount || !orderId) {
       return res.status(400).json({ success: false, message: 'Missing fields' });
     }
@@ -152,7 +155,6 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
     const token = await getMpesaAccessToken();
     const phone = formatPhone(phoneNumber);
     const timestamp = generateTimestamp();
-
     const password = Buffer.from(
       MPESA_CONFIG.shortCode + MPESA_CONFIG.passKey + timestamp
     ).toString('base64');
@@ -170,13 +172,11 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
         PhoneNumber: phone,
         CallBackURL:
           process.env.MPESA_CALLBACK_URL ||
-          'https://backend-payment-cv4c.onrender.com/api/mpesa/callback',
+          `https://backend-payment-cv4c.onrender.com/api/mpesa/callback`,
         AccountReference: 'GadgetsByCrestrock',
         TransactionDesc: 'Gadgets Purchase',
       },
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      }
+      { headers: { Authorization: `Bearer ${token}` } }
     );
 
     await db.ref(`orders/${orderId}`).update({
@@ -193,7 +193,7 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
 });
 
 /* ======================================================
-   📞 M-Pesa Callback
+   📞 M-Pesa Callback Endpoint
    ====================================================== */
 app.post('/api/mpesa/callback', async (req, res) => {
   try {
@@ -216,9 +216,7 @@ app.post('/api/mpesa/callback', async (req, res) => {
           amount: meta.find(i => i.Name === 'Amount')?.Value,
         });
       } else {
-        await updateOrderStatus(orderId, 'payment_failed', {
-          reason: stk.ResultDesc,
-        });
+        await updateOrderStatus(orderId, 'payment_failed', { reason: stk.ResultDesc });
       }
     }
 
