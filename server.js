@@ -231,6 +231,29 @@ async function getOrderById(orderId) {
 }
 
 /* ======================================================
+   📢 Notification System
+   ====================================================== */
+async function createNotification(message, type, orderId = null, details = null) {
+  try {
+    const notificationRef = db.ref('notifications').push();
+    const notification = {
+      id: notificationRef.key,
+      message: message,
+      type: type,
+      orderId: orderId,
+      details: details,
+      read: false,
+      time: new Date().toISOString()
+    };
+    await notificationRef.set(notification);
+    console.log('📢 Notification created:', message);
+    return notification;
+  } catch (error) {
+    console.error('❌ Error creating notification:', error.message);
+  }
+}
+
+/* ======================================================
    📍 API Endpoints
    ====================================================== */
 
@@ -326,6 +349,19 @@ app.post('/api/orders', async (req, res) => {
 
     // Save to Firebase
     const order = await saveOrderToFirebase(orderData);
+    
+    // Create notification for new order
+    await createNotification(
+      `🛒 New order #${order.id.slice(-8)} from ${customerInfo.name} (KSh ${total.toLocaleString()})`,
+      'info',
+      order.id,
+      {
+        customerName: customerInfo.name,
+        phone: formattedPhone,
+        amount: total,
+        items: items.map(item => item.name).join(', ')
+      }
+    );
     
     console.log('✅ Order created successfully. ID:', order.id);
     
@@ -470,6 +506,19 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
       phoneNumber: phone
     });
 
+    // Create notification for STK push
+    await createNotification(
+      `📱 STK Push sent to ${phone} for Order #${orderId.slice(-8)} (KSh ${amount})`,
+      'info',
+      orderId,
+      {
+        customerName: order.customerInfo?.name,
+        phone: phone,
+        amount: amount,
+        orderId: orderId
+      }
+    );
+
     console.log('✅ STK Push initiated for order:', orderId);
     
     res.json({
@@ -483,6 +532,22 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
     if (error.response) {
       console.error('M-Pesa API Error Response:', error.response.data);
       console.error('Status:', error.response.status);
+    }
+    
+    // Create notification for failed STK push
+    const order = await getOrderById(req.body.orderId);
+    if (order) {
+      await createNotification(
+        `❌ STK Push failed for Order #${req.body.orderId?.slice(-8)}: ${error.message}`,
+        'error',
+        req.body.orderId,
+        {
+          customerName: order.customerInfo?.name,
+          phone: req.body.phoneNumber,
+          amount: req.body.amount,
+          error: error.message
+        }
+      );
     }
     
     res.status(500).json({ 
@@ -556,6 +621,27 @@ app.post('/api/mpesa/callback', async (req, res) => {
         mpesaCallback: req.body
       });
       
+      // Create detailed notification for admin
+      await createNotification(
+        `💰 Payment of KSh ${amount} received for Order #${orderId.slice(-8)} from ${order.customerInfo?.name}. Receipt: ${receiptNumber}`,
+        'success',
+        orderId,
+        {
+          customerName: order.customerInfo?.name,
+          phone: phoneNumber,
+          amount: amount,
+          receiptNumber: receiptNumber,
+          items: order.items?.map(item => ({
+            name: item.name,
+            quantity: item.quantity,
+            price: item.price,
+            total: item.price * item.quantity
+          })),
+          totalOrderAmount: order.total,
+          deliveryAddress: order.customerInfo?.deliveryAddress
+        }
+      );
+      
       console.log(`✅ Payment recorded. Receipt: ${receiptNumber}, Amount: ${amount}`);
     } else {
       // Payment failed
@@ -566,6 +652,19 @@ app.post('/api/mpesa/callback', async (req, res) => {
         failedAt: new Date().toISOString(),
         mpesaCallback: req.body
       });
+      
+      // Create notification for failed payment
+      await createNotification(
+        `❌ Payment failed for Order #${orderId.slice(-8)}: ${ResultDesc}`,
+        'error',
+        orderId,
+        {
+          customerName: order.customerInfo?.name,
+          phone: order.customerInfo?.phone,
+          amount: order.total,
+          reason: ResultDesc
+        }
+      );
     }
 
     res.json({ ResultCode: 0, ResultDesc: 'Success' });
