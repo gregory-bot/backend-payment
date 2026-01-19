@@ -7,7 +7,6 @@ const axios = require('axios');
 const bodyParser = require('body-parser');
 const dotenv = require('dotenv');
 const admin = require('firebase-admin');
-const nodemailer = require('nodemailer');
 
 dotenv.config();
 
@@ -64,298 +63,6 @@ try {
   console.error('❌ Firebase initialization failed:', error.message);
   console.error('Stack:', error.stack);
   throw error;
-}
-
-/* ======================================================
-   📧 Email Service Configuration
-   ====================================================== */
-// Email configuration
-const EMAIL_CONFIG = {
-  service: process.env.EMAIL_SERVICE || 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASSWORD,
-  },
-};
-
-// Create transporter
-let transporter;
-try {
-  if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
-    transporter = nodemailer.createTransport({
-      service: EMAIL_CONFIG.service,
-      auth: EMAIL_CONFIG.auth,
-    });
-
-    // Verify email configuration
-    transporter.verify((error, success) => {
-      if (error) {
-        console.error('❌ Email configuration error:', error.message);
-      } else {
-        console.log('✅ Email server is ready to send messages');
-      }
-    });
-  } else {
-    console.log('⚠️ Email credentials not configured. Email service disabled.');
-  }
-} catch (error) {
-  console.error('❌ Email transporter creation failed:', error.message);
-}
-
-/**
- * Send order confirmation email
- */
-async function sendOrderConfirmationEmail(order) {
-  try {
-    if (!transporter) {
-      console.log('📧 Email service not available');
-      return false;
-    }
-
-    if (!order.customerInfo?.email) {
-      console.log('📧 No email provided for order, skipping email');
-      return false;
-    }
-
-    const orderIdShort = order.id.slice(-8).toUpperCase();
-    const totalAmount = order.total.toLocaleString();
-    const itemsList = order.items.map(item => 
-      `• ${item.name} (${item.brand}) - ${item.quantity} x KSh ${item.price.toLocaleString()} = KSh ${(item.price * item.quantity).toLocaleString()}`
-    ).join('\n');
-
-    const mailOptions = {
-      from: process.env.EMAIL_FROM || `"Gadgets by Crestrock" <${process.env.EMAIL_USER}>`,
-      to: order.customerInfo.email,
-      subject: `🎉 Order Confirmation - #${orderIdShort}`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0; }
-            .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
-            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
-            .footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 12px; }
-            .status-badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-weight: bold; }
-            .status-paid { background: #d1fae5; color: #065f46; }
-            .button { display: inline-block; background: #10b981; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1 style="margin: 0;">Order Confirmed! 🎉</h1>
-              <p style="margin: 10px 0 0 0; opacity: 0.9;">Thank you for your purchase</p>
-            </div>
-            
-            <div class="content">
-              <p>Hello <strong>${order.customerInfo.name}</strong>,</p>
-              <p>Your order has been confirmed and payment received successfully!</p>
-              
-              <div class="order-details">
-                <h3 style="margin-top: 0;">Order Summary</h3>
-                <div style="margin-bottom: 15px;">
-                  <span class="status-badge status-paid">PAID</span>
-                  <strong>Order ID:</strong> #${orderIdShort}
-                </div>
-                
-                <table style="width: 100%; border-collapse: collapse;">
-                  <thead style="background: #f3f4f6;">
-                    <tr>
-                      <th style="text-align: left; padding: 10px; border-bottom: 1px solid #e5e7eb;">Item</th>
-                      <th style="text-align: right; padding: 10px; border-bottom: 1px solid #e5e7eb;">Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${order.items.map(item => `
-                      <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;">
-                          <strong>${item.name}</strong><br>
-                          <small>${item.brand} • Qty: ${item.quantity}</small>
-                        </td>
-                        <td style="text-align: right; padding: 10px; border-bottom: 1px solid #e5e7eb;">
-                          KSh ${(item.price * item.quantity).toLocaleString()}
-                        </td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                  <tfoot style="background: #f3f4f6;">
-                    <tr>
-                      <td style="padding: 10px; font-weight: bold;">Total Amount</td>
-                      <td style="text-align: right; padding: 10px; font-weight: bold; font-size: 18px;">
-                        KSh ${totalAmount}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-              
-              <div style="margin: 20px 0;">
-                <h4>Delivery Information</h4>
-                <p>
-                  <strong>Delivery Address:</strong> ${order.customerInfo.deliveryAddress}<br>
-                  <strong>Phone:</strong> ${order.customerInfo.phone}<br>
-                  <strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleString()}
-                </p>
-              </div>
-              
-              ${order.mpesaData?.receiptNumber ? `
-              <div style="background: #d1fae5; padding: 15px; border-radius: 6px; margin: 20px 0;">
-                <h4 style="margin-top: 0; color: #065f46;">Payment Details</h4>
-                <p style="margin: 5px 0;"><strong>M-Pesa Receipt:</strong> ${order.mpesaData.receiptNumber}</p>
-                <p style="margin: 5px 0;"><strong>Amount Paid:</strong> KSh ${order.mpesaData.amount?.toLocaleString() || totalAmount}</p>
-                <p style="margin: 5px 0;"><strong>Payment Time:</strong> ${new Date(order.updatedAt).toLocaleString()}</p>
-              </div>
-              ` : ''}
-              
-              <div style="margin: 25px 0; text-align: center;">
-                <a href="${process.env.FRONTEND_URL || 'https://shop.gadgets.crestrock.ltd'}/order-confirmation/${order.id}" class="button">
-                  View Order Status
-                </a>
-              </div>
-              
-              <p>We'll contact you shortly to confirm delivery details. Delivery typically takes 24-48 hours.</p>
-              
-              <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-                <h4>Need Help?</h4>
-                <p>
-                  📞 Call us: <a href="tel:+254742312545" style="color: #10b981;">+254 742 312 545</a><br>
-                  💬 WhatsApp: <a href="https://wa.me/254742312545" style="color: #10b981;">+254 742 312 545</a><br>
-                  📧 Email: <a href="mailto:support@gadgets.crestrock.ltd" style="color: #10b981;">support@gadgets.crestrock.ltd</a>
-                </p>
-              </div>
-            </div>
-            
-            <div class="footer">
-              <p>© ${new Date().getFullYear()} Gadgets by Crestrock. All rights reserved.</p>
-              <p>This email was sent automatically. Please do not reply to this email.</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `,
-      text: `
-Order Confirmation - #${orderIdShort}
-
-Hello ${order.customerInfo.name},
-
-Your order has been confirmed and payment received successfully!
-
-ORDER SUMMARY:
-Order ID: #${orderIdShort}
-Status: PAID
-Order Date: ${new Date(order.createdAt).toLocaleString()}
-
-ITEMS:
-${itemsList}
-
-TOTAL: KSh ${totalAmount}
-
-DELIVERY INFORMATION:
-Name: ${order.customerInfo.name}
-Address: ${order.customerInfo.deliveryAddress}
-Phone: ${order.customerInfo.phone}
-
-${order.mpesaData?.receiptNumber ? `
-PAYMENT DETAILS:
-M-Pesa Receipt: ${order.mpesaData.receiptNumber}
-Amount Paid: KSh ${order.mpesaData.amount?.toLocaleString() || totalAmount}
-Payment Time: ${new Date(order.updatedAt).toLocaleString()}
-` : ''}
-
-We'll contact you shortly to confirm delivery details. Delivery typically takes 24-48 hours.
-
-NEED HELP?
-📞 Call: +254 742 312 545
-💬 WhatsApp: +254 742 312 545
-📧 Email: support@gadgets.crestrock.ltd
-
-View your order: ${process.env.FRONTEND_URL || 'https://shop.gadgets.crestrock.ltd'}/order-confirmation/${order.id}
-
-© ${new Date().getFullYear()} Gadgets by Crestrock
-      `
-    };
-
-    console.log(`📧 Sending confirmation email to: ${order.customerInfo.email}`);
-    const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent successfully:', info.messageId);
-    
-    return true;
-  } catch (error) {
-    console.error('❌ Error sending email:', error.message);
-    return false;
-  }
-}
-
-/**
- * Send order notification email to admin
- */
-async function sendAdminNotificationEmail(order) {
-  try {
-    if (!transporter) {
-      console.log('📧 Email service not available');
-      return false;
-    }
-
-    const adminEmail = process.env.ADMIN_EMAIL;
-    if (!adminEmail) {
-      console.log('📧 No admin email configured');
-      return false;
-    }
-
-    const orderIdShort = order.id.slice(-8).toUpperCase();
-    const totalAmount = order.total.toLocaleString();
-
-    const mailOptions = {
-      from: process.env.EMAIL_FROM || `"Gadgets by Crestrock" <${process.env.EMAIL_USER}>`,
-      to: adminEmail,
-      subject: `🛒 New Order Received - #${orderIdShort}`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; }
-            .container { max-width: 600px; margin: 0 auto; }
-            .header { background: #1e40af; color: white; padding: 20px; }
-            .content { background: #f3f4f6; padding: 20px; }
-            .order-info { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h2>🛒 New Order Received</h2>
-            </div>
-            <div class="content">
-              <div class="order-info">
-                <h3>Order #${orderIdShort}</h3>
-                <p><strong>Customer:</strong> ${order.customerInfo.name}</p>
-                <p><strong>Phone:</strong> ${order.customerInfo.phone}</p>
-                <p><strong>Email:</strong> ${order.customerInfo.email || 'Not provided'}</p>
-                <p><strong>Amount:</strong> KSh ${totalAmount}</p>
-                <p><strong>Delivery Address:</strong> ${order.customerInfo.deliveryAddress}</p>
-                <p><strong>Payment Method:</strong> ${order.paymentMethod}</p>
-                ${order.mpesaData?.receiptNumber ? 
-                  `<p><strong>M-Pesa Receipt:</strong> ${order.mpesaData.receiptNumber}</p>` : ''}
-              </div>
-              <p><a href="${process.env.ADMIN_URL || process.env.FRONTEND_URL || 'https://shop.gadgets.crestrock.ltd'}/admin/orders/${order.id}">View Order in Admin Panel</a></p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `
-    };
-
-    console.log(`📧 Sending admin notification to: ${adminEmail}`);
-    await transporter.sendMail(mailOptions);
-    return true;
-  } catch (error) {
-    console.error('❌ Error sending admin email:', error.message);
-    return false;
-  }
 }
 
 /* ======================================================
@@ -475,6 +182,164 @@ function formatPhone(phone) {
 }
 
 /* ======================================================
+   📧 EmailJS Configuration
+   ====================================================== */
+// EmailJS configuration
+const EMAILJS_CONFIG = {
+  serviceId: process.env.EMAILJS_SERVICE_ID,
+  templateId: process.env.EMAILJS_TEMPLATE_ID || 'order_confirmation',
+  userId: process.env.EMAILJS_USER_ID, // Public Key
+  accessToken: process.env.EMAILJS_ACCESS_TOKEN, // Optional for private templates
+};
+
+console.log('📧 EmailJS Config:', {
+  hasServiceId: !!EMAILJS_CONFIG.serviceId,
+  hasUserId: !!EMAILJS_CONFIG.userId,
+  hasTemplateId: !!EMAILJS_CONFIG.templateId,
+});
+
+/**
+ * Send order confirmation email via EmailJS
+ */
+async function sendOrderConfirmationEmail(order) {
+  try {
+    if (!order.customerInfo?.email) {
+      console.log('📧 No email provided for order, skipping email');
+      return false;
+    }
+
+    // Check if EmailJS is configured
+    if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.userId) {
+      console.log('📧 EmailJS not configured');
+      return false;
+    }
+
+    const orderIdShort = order.id.slice(-8).toUpperCase();
+    const totalAmount = order.total.toLocaleString();
+    
+    // Create HTML for items list
+    const itemsListHTML = order.items.map(item => `
+      <tr>
+        <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;">
+          <strong>${item.name}</strong><br>
+          <small>${item.brand} • Qty: ${item.quantity}</small>
+        </td>
+        <td style="text-align: right; padding: 10px; border-bottom: 1px solid #e5e7eb;">
+          KSh ${(item.price * item.quantity).toLocaleString()}
+        </td>
+      </tr>
+    `).join('');
+
+    const emailData = {
+      to_email: order.customerInfo.email,
+      customer_name: order.customerInfo.name,
+      order_id: orderIdShort,
+      items_list: itemsListHTML,
+      total_amount: totalAmount,
+      delivery_address: order.customerInfo.deliveryAddress,
+      phone: order.customerInfo.phone,
+      order_date: new Date(order.createdAt).toLocaleString(),
+      receipt_number: order.mpesaData?.receiptNumber || '',
+      amount_paid: (order.mpesaData?.amount || order.total).toLocaleString(),
+      payment_time: new Date(order.updatedAt).toLocaleString(),
+      order_link: `${process.env.FRONTEND_URL || 'https://shop.gadgets.crestrock.ltd'}/order-confirmation/${order.id}`,
+      current_year: new Date().getFullYear().toString(),
+    };
+
+    console.log(`📧 Sending EmailJS request to: ${order.customerInfo.email}`);
+    
+    // EmailJS API endpoint
+    const response = await axios.post(
+      'https://api.emailjs.com/api/v1.0/email/send',
+      {
+        service_id: EMAILJS_CONFIG.serviceId,
+        template_id: EMAILJS_CONFIG.templateId,
+        user_id: EMAILJS_CONFIG.userId,
+        accessToken: EMAILJS_CONFIG.accessToken,
+        template_params: emailData,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      }
+    );
+
+    console.log('✅ EmailJS response status:', response.status);
+    console.log('📧 Email sent successfully via EmailJS');
+    return true;
+    
+  } catch (error) {
+    console.error('❌ EmailJS error:', error.message);
+    if (error.response) {
+      console.error('EmailJS response data:', error.response.data);
+      console.error('EmailJS status:', error.response.status);
+    }
+    return false;
+  }
+}
+
+/**
+ * Send admin notification email
+ */
+async function sendAdminNotificationEmail(order) {
+  try {
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (!adminEmail) {
+      console.log('📧 No admin email configured');
+      return false;
+    }
+
+    if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.userId) {
+      console.log('📧 EmailJS not configured');
+      return false;
+    }
+
+    const orderIdShort = order.id.slice(-8).toUpperCase();
+    const totalAmount = order.total.toLocaleString();
+
+    const emailData = {
+      to_email: adminEmail,
+      customer_name: order.customerInfo.name,
+      order_id: orderIdShort,
+      phone: order.customerInfo.phone,
+      email: order.customerInfo.email || 'Not provided',
+      total_amount: totalAmount,
+      delivery_address: order.customerInfo.deliveryAddress,
+      payment_method: order.paymentMethod,
+      receipt_number: order.mpesaData?.receiptNumber || 'N/A',
+      order_date: new Date(order.createdAt).toLocaleString(),
+      current_year: new Date().getFullYear().toString(),
+    };
+
+    const response = await axios.post(
+      'https://api.emailjs.com/api/v1.0/email/send',
+      {
+        service_id: EMAILJS_CONFIG.serviceId,
+        template_id: process.env.EMAILJS_ADMIN_TEMPLATE_ID || EMAILJS_CONFIG.templateId,
+        user_id: EMAILJS_CONFIG.userId,
+        accessToken: EMAILJS_CONFIG.accessToken,
+        template_params: emailData,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      }
+    );
+
+    console.log('✅ Admin notification sent via EmailJS');
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Admin email error:', error.message);
+    return false;
+  }
+}
+
+/* ======================================================
    📦 Firebase Helpers
    ====================================================== */
 async function saveOrderToFirebase(orderData) {
@@ -513,7 +378,7 @@ async function updateOrderStatus(orderId, status, mpesaData = null) {
     await db.ref(`orders/${orderId}`).update(updates);
     console.log(`✅ Order ${orderId} updated to status: ${status}`);
     
-    // Return updated order
+    // Return updated order for email sending
     const updatedOrder = await getOrderById(orderId);
     return updatedOrder;
   } catch (error) {
@@ -559,7 +424,7 @@ async function createNotification(message, type, orderId = null, details = null)
    📍 API Endpoints
    ====================================================== */
 
-// 1. Health Check (Updated with email status)
+// 1. Health Check (Updated with EmailJS status)
 app.get('/api/health', (req, res) => {
   console.log('🏥 Health check from:', req.headers.origin || 'Unknown');
   res.json({
@@ -568,7 +433,7 @@ app.get('/api/health', (req, res) => {
     service: 'Gadgets by Crestrock API',
     firebase: db ? 'Connected' : 'Disconnected',
     mpesa: MPESA_CONFIG.consumerKey ? 'Configured' : 'Not configured',
-    email: transporter ? 'Configured' : 'Not configured',
+    emailjs: EMAILJS_CONFIG.serviceId && EMAILJS_CONFIG.userId ? 'Configured' : 'Not configured',
     cors: 'enabled',
     endpoints: [
       'GET /api/health',
@@ -863,7 +728,7 @@ app.post('/api/mpesa/stk-push', async (req, res) => {
 });
 
 /* ======================================================
-   📞 M-Pesa Callback Endpoint (Updated with Email)
+   📞 M-Pesa Callback Endpoint (Updated with EmailJS)
    ====================================================== */
 app.post('/api/mpesa/callback', async (req, res) => {
   try {
@@ -925,11 +790,11 @@ app.post('/api/mpesa/callback', async (req, res) => {
         mpesaCallback: req.body
       });
       
-      // ✅ SEND EMAIL TO CUSTOMER
+      // ✅ SEND EMAIL TO CUSTOMER VIA EMAILJS
       try {
         const emailSent = await sendOrderConfirmationEmail(updatedOrder);
         if (emailSent) {
-          console.log('📧 Confirmation email sent to customer');
+          console.log('📧 Confirmation email sent to customer via EmailJS');
           
           // Update notification with email status
           await createNotification(
@@ -944,7 +809,7 @@ app.post('/api/mpesa/callback', async (req, res) => {
           );
         }
       } catch (emailError) {
-        console.error('📧 Email sending failed:', emailError.message);
+        console.error('📧 EmailJS sending failed:', emailError.message);
         // Don't fail the whole process if email fails
       }
       
@@ -1011,11 +876,11 @@ app.post('/api/mpesa/callback', async (req, res) => {
 });
 
 /* ======================================================
-   📧 Test Email Endpoint
+   📧 Test Email Endpoint - EMAILJS VERSION
    ====================================================== */
 app.post('/api/test-email', async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, name } = req.body;
     
     if (!email) {
       return res.status(400).json({ 
@@ -1024,39 +889,81 @@ app.post('/api/test-email', async (req, res) => {
       });
     }
 
-    if (!transporter) {
+    if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.userId) {
       return res.status(500).json({
         success: false,
-        message: 'Email service not configured'
+        message: 'EmailJS not configured'
       });
     }
 
-    const testMailOptions = {
-      from: process.env.EMAIL_FROM || `"Gadgets by Crestrock" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: '✅ Test Email from Gadgets by Crestrock',
-      text: 'This is a test email to confirm your email configuration is working correctly.',
-      html: `
-        <div style="font-family: Arial, sans-serif; padding: 20px;">
-          <h2 style="color: #10b981;">✅ Test Email Successful!</h2>
-          <p>Your email configuration is working correctly.</p>
-          <p>You will receive order confirmation emails at this address.</p>
-        </div>
-      `
+    // Create test order data
+    const orderIdShort = 'TEST-12345';
+    
+    // Create HTML for items list
+    const itemsListHTML = `
+      <tr>
+        <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;">
+          <strong>Test Product</strong><br>
+          <small>Test Brand • Qty: 1</small>
+        </td>
+        <td style="text-align: right; padding: 10px; border-bottom: 1px solid #e5e7eb;">
+          KSh 1
+        </td>
+      </tr>
+    `;
+
+    const testEmailData = {
+      to_email: email,
+      customer_name: name || 'Test Customer',
+      order_id: orderIdShort,
+      items_list: itemsListHTML,
+      total_amount: '1',
+      delivery_address: 'Test Address, Nairobi',
+      phone: '254712345678',
+      order_date: new Date().toLocaleString(),
+      receipt_number: 'TEST123456',
+      amount_paid: '1',
+      payment_time: new Date().toLocaleString(),
+      order_link: `${process.env.FRONTEND_URL || 'https://shop.gadgets.crestrock.ltd'}/order-confirmation/test`,
+      current_year: new Date().getFullYear().toString(),
     };
 
-    await transporter.sendMail(testMailOptions);
+    console.log(`📧 Sending test email via EmailJS to: ${email}`);
+    
+    const response = await axios.post(
+      'https://api.emailjs.com/api/v1.0/email/send',
+      {
+        service_id: EMAILJS_CONFIG.serviceId,
+        template_id: EMAILJS_CONFIG.templateId,
+        user_id: EMAILJS_CONFIG.userId,
+        accessToken: EMAILJS_CONFIG.accessToken,
+        template_params: testEmailData,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      }
+    );
+
+    console.log('✅ Test email sent via EmailJS, status:', response.status);
     
     res.json({
       success: true,
-      message: 'Test email sent successfully'
+      message: 'Test email sent successfully via EmailJS',
+      status: response.status,
     });
   } catch (error) {
-    console.error('Test email error:', error);
+    console.error('Test email error:', error.message);
+    if (error.response) {
+      console.error('EmailJS response data:', error.response.data);
+      console.error('EmailJS status:', error.response.status);
+    }
     res.status(500).json({
       success: false,
       message: 'Failed to send test email',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -1101,5 +1008,5 @@ app.listen(PORT, () => {
   console.log(`🔒 CORS: Enabled for all origins (temporarily for debugging)`);
   console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📊 Firebase: ${db ? 'Connected' : 'Disconnected'}`);
-  console.log(`📧 Email: ${transporter ? 'Configured' : 'Not configured'}`);
+  console.log(`📧 EmailJS: ${EMAILJS_CONFIG.serviceId && EMAILJS_CONFIG.userId ? 'Configured' : 'Not configured'}`);
 });
